@@ -4,6 +4,7 @@ import gc
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -80,6 +81,18 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*swigva
 
 # Initialize logger early for util functions
 logger = logging.getLogger(__name__)
+
+
+def _find_near_duplicate(vector, queued_vectors):
+    """Index of the first queued vector at cosine >= 0.95 to `vector` (the stored-entity match threshold), else None."""
+    norm = math.sqrt(sum(x * x for x in vector))
+    if not norm:
+        return None
+    for i, other in enumerate(queued_vectors):
+        other_norm = math.sqrt(sum(x * x for x in other))
+        if other_norm and sum(a * b for a, b in zip(vector, other)) / (norm * other_norm) >= 0.95:
+            return i
+    return None
 
 
 def _vector_store_list_rows(listed):
@@ -1183,17 +1196,23 @@ class Memory(MemoryBase):
                                     payload=payload,
                                 )
                             except Exception as e:
-                                logger.debug(f"Entity update failed for '{entity_text}': {e}")
+                                logger.warning(f"Entity update failed for '{entity_text}': {e}")
                         else:
-                            # New entity — collect for batch insert
-                            to_insert_vectors.append(valid_vectors[j])
-                            to_insert_ids.append(str(uuid.uuid4()))
-                            to_insert_payloads.append({
-                                "data": entity_text,
-                                "entity_type": entity_type,
-                                "linked_memory_ids": sorted(memory_ids),
-                                **search_filters,
-                            })
+                            # New entity — collect for batch insert, folding it into an
+                            # already queued insert when the two are near-duplicates
+                            queued = _find_near_duplicate(valid_vectors[j], to_insert_vectors)
+                            if queued is not None:
+                                queued_links = to_insert_payloads[queued]["linked_memory_ids"]
+                                to_insert_payloads[queued]["linked_memory_ids"] = sorted({*queued_links, *memory_ids})
+                            else:
+                                to_insert_vectors.append(valid_vectors[j])
+                                to_insert_ids.append(str(uuid.uuid4()))
+                                to_insert_payloads.append({
+                                    "data": entity_text,
+                                    "entity_type": entity_type,
+                                    "linked_memory_ids": sorted(memory_ids),
+                                    **search_filters,
+                                })
 
                     # 7e: Single batch insert for all new entities
                     if to_insert_vectors:
@@ -2870,16 +2889,21 @@ class AsyncMemory(MemoryBase):
                                     payload=payload,
                                 )
                             except Exception as e:
-                                logger.debug(f"Entity update failed for '{entity_text}' (async): {e}")
+                                logger.warning(f"Entity update failed for '{entity_text}' (async): {e}")
                         else:
-                            to_insert_vectors.append(valid_vectors[j])
-                            to_insert_ids.append(str(uuid.uuid4()))
-                            to_insert_payloads.append({
-                                "data": entity_text,
-                                "entity_type": entity_type,
-                                "linked_memory_ids": sorted(memory_ids),
-                                **search_filters,
-                            })
+                            queued = _find_near_duplicate(valid_vectors[j], to_insert_vectors)
+                            if queued is not None:
+                                queued_links = to_insert_payloads[queued]["linked_memory_ids"]
+                                to_insert_payloads[queued]["linked_memory_ids"] = sorted({*queued_links, *memory_ids})
+                            else:
+                                to_insert_vectors.append(valid_vectors[j])
+                                to_insert_ids.append(str(uuid.uuid4()))
+                                to_insert_payloads.append({
+                                    "data": entity_text,
+                                    "entity_type": entity_type,
+                                    "linked_memory_ids": sorted(memory_ids),
+                                    **search_filters,
+                                })
 
                     # 7e: Batch insert new entities
                     if to_insert_vectors:

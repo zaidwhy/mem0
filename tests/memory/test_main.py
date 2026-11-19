@@ -1261,6 +1261,75 @@ class TestAddPipelineSharedEntityMatch:
         assert self._final_links(memory._entity_store) == {"m0", *(r["id"] for r in result)}
 
 
+class TestNearDuplicateNewEntitiesInOneBatch:
+    """Two new entities that are near-duplicates of each other ("Bob", "Bob.") share one row."""
+
+    LLM_RESPONSE = '{"memory": [{"text": "Bob likes tea"}, {"text": "Bob. is a nurse"}]}'
+    ENTITIES = [[("PROPER", "Bob")], [("PROPER", "Bob.")]]
+
+    @staticmethod
+    def _entity_store():
+        store = Mock()
+        store.list = Mock(return_value=([], None))
+        store.search_batch = Mock(return_value=[[], []])
+        return store
+
+    @staticmethod
+    def _inserted(store):
+        assert store.insert.call_count == 1
+        kwargs = store.insert.call_args.kwargs
+        return kwargs["payloads"]
+
+    def test_sync_near_duplicate_new_entities_become_one_row(self, mocker):
+        _setup_mocks(mocker)
+        memory = Memory()
+        memory.custom_instructions = None
+        memory.db.get_last_messages = MagicMock(return_value=[])
+        memory.llm.generate_response.return_value = self.LLM_RESPONSE
+        memory.embedding_model = Mock()
+        memory.embedding_model.embed = Mock(return_value=[0.1] * 10)
+        memory.embedding_model.embed_batch = Mock(side_effect=lambda texts, _action="add": [[0.1] * 10 for _ in texts])
+        memory._entity_store = self._entity_store()
+        mocker.patch("mem0.memory.main.extract_entities_batch", return_value=self.ENTITIES)
+        mocker.patch("mem0.memory.main.capture_event")
+
+        result = memory._add_to_vector_store(
+            messages=[{"role": "user", "content": "Bob likes tea. Bob. is a nurse."}],
+            metadata={"user_id": "u1"},
+            filters={"user_id": "u1"},
+            infer=True,
+        )
+
+        payloads = self._inserted(memory._entity_store)
+        assert len(payloads) == 1
+        assert set(payloads[0]["linked_memory_ids"]) == {r["id"] for r in result}
+
+    @pytest.mark.asyncio
+    async def test_async_near_duplicate_new_entities_become_one_row(self, mocker):
+        _setup_mocks(mocker)
+        memory = AsyncMemory()
+        memory.custom_instructions = None
+        memory.db.get_last_messages = MagicMock(return_value=[])
+        memory.llm.generate_response.return_value = self.LLM_RESPONSE
+        memory.embedding_model = Mock()
+        memory.embedding_model.embed = Mock(return_value=[0.1] * 10)
+        memory.embedding_model.embed_batch = Mock(side_effect=lambda texts, _action="add": [[0.1] * 10 for _ in texts])
+        memory._entity_store = self._entity_store()
+        mocker.patch("mem0.memory.main.extract_entities_batch", return_value=self.ENTITIES)
+        mocker.patch("mem0.memory.main.capture_event")
+
+        result = await memory._add_to_vector_store(
+            messages=[{"role": "user", "content": "Bob likes tea. Bob. is a nurse."}],
+            metadata={"user_id": "u1"},
+            effective_filters={"user_id": "u1"},
+            infer=True,
+        )
+
+        payloads = self._inserted(memory._entity_store)
+        assert len(payloads) == 1
+        assert set(payloads[0]["linked_memory_ids"]) == {r["id"] for r in result}
+
+
 class TestPartialInsertFailure:
     """Records the vector store rejects must never be reported as successful ADDs (#6911)."""
 
