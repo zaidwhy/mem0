@@ -1198,7 +1198,7 @@ class Memory(MemoryBase):
                             except Exception as e:
                                 logger.warning(f"Entity update failed for '{entity_text}': {e}")
                         else:
-                            # New entity — collect for batch insert, folding it into an
+                            # New entity - collect for batch insert, folding it into an
                             # already queued insert when the two are near-duplicates
                             queued = _find_near_duplicate(valid_vectors[j], to_insert_vectors)
                             if queued is not None:
